@@ -1,184 +1,90 @@
--- ServerScriptService > RuntimeWeaponTracer
-local Players = game:GetService("Players")
+-- ServerScriptService > WeaponCollector
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 
-local WEAPON_TAGS = {
-	Weapon = true,
-	Weapon_Gun = true,
-	Weapon_Knife = true,
-}
+local backupFolder = ReplicatedStorage:FindFirstChild("WeaponsBackup")
 
-local watchedTools = setmetatable({}, { __mode = "k" })
-local watchedScripts = setmetatable({}, { __mode = "k" })
-
-local function fullName(instance)
-	local ok, result = pcall(function()
-		return instance:GetFullName()
-	end)
-
-	return ok and result or instance.Name
+if not backupFolder then
+	backupFolder = Instance.new("Folder")
+	backupFolder.Name = "WeaponsBackup"
+	backupFolder.Parent = ReplicatedStorage
 end
 
-local function tagsToText(instance)
-	local tags = CollectionService:GetTags(instance)
-	return #tags > 0 and table.concat(tags, ", ") or "aucun"
+local collected = {}
+
+local function safeName(text)
+	text = tostring(text or "UnknownWeapon")
+	return text:gsub("[^%w_%-]", "_")
 end
 
-local function attributesToText(instance)
-	local parts = {}
-
-	for name, value in pairs(instance:GetAttributes()) do
-		table.insert(parts, name .. " = " .. tostring(value))
-	end
-
-	table.sort(parts)
-	return #parts > 0 and table.concat(parts, " | ") or "aucun"
-end
-
-local function isWeapon(tool)
+local function collectWeapon(tool, reason)
 	if not tool:IsA("Tool") then
-		return false
-	end
-
-	if tool.Name == "Gun" or tool.Name == "Knife" then
-		return true
-	end
-
-	for tag in pairs(WEAPON_TAGS) do
-		if tool:HasTag(tag) then
-			return true
-		end
-	end
-
-	return tool:GetAttribute("IsWeapon") == true
-end
-
-local function watchTool(tool, reason)
-	if watchedTools[tool] or not isWeapon(tool) then
 		return
 	end
 
-	watchedTools[tool] = true
-
-	print("\n================ ARME RUNTIME ================")
-	print("Raison :", reason)
-	print("Nom :", tool.Name)
-	print("Chemin :", fullName(tool))
-	print("Parent :", tool.Parent and fullName(tool.Parent) or "nil")
-	print("Tags :", tagsToText(tool))
-	print("Attributs :", attributesToText(tool))
-	print("Enfants :", #tool:GetChildren())
-
-	for _, child in ipairs(tool:GetChildren()) do
-		print("  Enfant :", child.ClassName, child.Name)
-	end
-
-	tool.ChildAdded:Connect(function(child)
-		print("[ARME ENFANT AJOUTÉ]", tool.Name, "->", child.ClassName, child.Name)
-	end)
-
-	tool.AttributeChanged:Connect(function(attributeName)
-		print(
-			"[ARME ATTRIBUT MODIFIÉ]",
-			tool.Name,
-			attributeName,
-			"=",
-			tostring(tool:GetAttribute(attributeName))
-		)
-	end)
-
-	tool:GetPropertyChangedSignal("Parent"):Connect(function()
-		print(
-			"[ARME PARENT CHANGE]",
-			tool.Name,
-			"->",
-			tool.Parent and fullName(tool.Parent) or "nil"
-		)
-	end)
-
-	tool.Destroying:Connect(function()
-		print("[ARME DÉTRUITE]", tool.Name, "dernier chemin :", fullName(tool))
-	end)
-end
-
-local function watchScript(scriptObject, reason)
-	if watchedScripts[scriptObject] then
+	if not tool:HasTag("Weapon") then
 		return
 	end
 
-	watchedScripts[scriptObject] = true
+	-- Laisse le Tool se remplir : Handle, scripts, animations, sons, Shoot...
+	task.wait(0.5)
 
-	print("\n[NEW SCRIPT RUNTIME]")
-	print("Raison :", reason)
-	print("Classe :", scriptObject.ClassName)
-	print("Chemin :", fullName(scriptObject))
-
-	if scriptObject:IsA("ModuleScript") then
-		print("Nom ModuleScript :", scriptObject.Name)
-	end
-end
-
-local function inspect(instance, reason)
-	if instance:IsA("Tool") then
-		task.defer(watchTool, instance, reason)
+	if not tool.Parent then
+		return
 	end
 
-	if instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
-		watchScript(instance, reason)
+	local itemId = tool:GetAttribute("ItemID")
+	local itemName = tool:GetAttribute("ItemName")
+	local weaponType = tool:GetAttribute("ItemType")
+
+	local uniqueId = itemId or itemName or tool.Name
+
+	if collected[uniqueId] or backupFolder:FindFirstChild(safeName(uniqueId)) then
+		return
 	end
-end
 
--- Surveille chaque service où des objets peuvent être créés ou déplacés.
-local ROOTS = {
-	workspace,
-	game:GetService("ReplicatedStorage"),
-	game:GetService("ServerStorage"),
-	game:GetService("ServerScriptService"),
-}
+	local copy = tool:Clone()
+	copy.Name = safeName(uniqueId)
+	copy:SetAttribute("OriginalToolName", tool.Name)
+	copy:SetAttribute("CollectedFrom", tool.Parent:GetFullName())
+	copy:SetAttribute("CollectedReason", reason)
 
-for _, root in ipairs(ROOTS) do
-	root.DescendantAdded:Connect(function(instance)
-		inspect(instance, "DescendantAdded dans " .. root.Name)
-	end)
+	copy.Parent = backupFolder
+	collected[uniqueId] = true
 
-	for _, instance in ipairs(root:GetDescendants()) do
-		inspect(instance, "déjà présent dans " .. root.Name)
-	end
+	print("\n========== ARME SAUVEGARDEE ==========")
+	print("ID :", uniqueId)
+	print("Nom :", itemName or tool.Name)
+	print("Type :", weaponType or "inconnu")
+	print("Dossier :", copy:GetFullName())
+	print("Enfants :", #copy:GetChildren())
 end
 
 local function watchPlayer(player)
 	local backpack = player:WaitForChild("Backpack")
 
-	backpack.ChildAdded:Connect(function(instance)
-		inspect(instance, "ajouté au Backpack de " .. player.Name)
+	backpack.ChildAdded:Connect(function(child)
+		task.spawn(collectWeapon, child, "ajoutée au Backpack de " .. player.Name)
 	end)
 
-	player.CharacterAdded:Connect(function(character)
-		character.ChildAdded:Connect(function(instance)
-			inspect(instance, "ajouté au Character de " .. player.Name)
-		end)
-	end)
-
-	for _, instance in ipairs(backpack:GetChildren()) do
-		inspect(instance, "déjà dans Backpack de " .. player.Name)
+	for _, child in ipairs(backpack:GetChildren()) do
+		task.spawn(collectWeapon, child, "déjà dans Backpack de " .. player.Name)
 	end
 end
 
-Players.PlayerAdded:Connect(watchPlayer)
+-- Cas où le tag Weapon est ajouté après que le Tool existe.
+CollectionService:GetInstanceAddedSignal("Weapon"):Connect(function(instance)
+	task.spawn(collectWeapon, instance, "tag Weapon ajouté")
+end)
 
-for _, player in ipairs(Players:GetPlayers()) do
+for _, instance in ipairs(CollectionService:GetTagged("Weapon")) do
+	task.spawn(collectWeapon, instance, "tag Weapon déjà présent")
+end
+
+game.Players.PlayerAdded:Connect(watchPlayer)
+
+for _, player in ipairs(game.Players:GetPlayers()) do
 	task.spawn(watchPlayer, player)
 end
 
--- Détection lorsque les tags sont ajoutés après la création du Tool.
-for tag in pairs(WEAPON_TAGS) do
-	CollectionService:GetInstanceAddedSignal(tag):Connect(function(instance)
-		task.defer(watchTool, instance, "tag ajouté : " .. tag)
-	end)
-
-	for _, instance in ipairs(CollectionService:GetTagged(tag)) do
-		task.defer(watchTool, instance, "tag existant : " .. tag)
-	end
-end
-
-print("[RuntimeWeaponTracer] Actif. Lance une manche puis attends Murderer/Sheriff.")
+print("[WeaponCollector] Actif : les armes collectées iront dans ReplicatedStorage.WeaponsBackup")
