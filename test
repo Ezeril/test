@@ -1,90 +1,103 @@
--- ServerScriptService > WeaponCollector
+-- ServerScriptService > AllExistingWeaponHandles
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 
-local backupFolder = ReplicatedStorage:FindFirstChild("WeaponsBackup")
+local output = ReplicatedStorage:FindFirstChild("WeaponHandles")
 
-if not backupFolder then
-	backupFolder = Instance.new("Folder")
-	backupFolder.Name = "WeaponsBackup"
-	backupFolder.Parent = ReplicatedStorage
+if not output then
+	output = Instance.new("Folder")
+	output.Name = "WeaponHandles"
+	output.Parent = ReplicatedStorage
 end
 
-local collected = {}
+local saved = {}
 
-local function safeName(text)
-	text = tostring(text or "UnknownWeapon")
-	return text:gsub("[^%w_%-]", "_")
+local function cleanName(value)
+	return tostring(value or "UnknownWeapon"):gsub("[^%w_%-]", "_")
 end
 
-local function collectWeapon(tool, reason)
-	if not tool:IsA("Tool") then
+local function findTool(instance)
+	local current = instance
+
+	while current and current ~= game do
+		if current:IsA("Tool") then
+			return current
+		end
+
+		current = current.Parent
+	end
+end
+
+local function isWeapon(tool)
+	if not tool or not tool:IsA("Tool") then
+		return false
+	end
+
+	return tool:HasTag("Weapon")
+		or tool:HasTag("Weapon_Gun")
+		or tool:HasTag("Weapon_Knife")
+		or tool:GetAttribute("IsWeapon") == true
+		or tool:GetAttribute("IsGun") == true
+		or tool:GetAttribute("IsKnife") == true
+		or tool.Name == "Gun"
+		or tool.Name == "Knife"
+end
+
+local function saveHandle(handle, reason)
+	if not handle:IsA("BasePart") or handle.Name ~= "Handle" then
 		return
 	end
 
-	if not tool:HasTag("Weapon") then
-		return
-	end
+	local tool = findTool(handle)
 
-	-- Laisse le Tool se remplir : Handle, scripts, animations, sons, Shoot...
-	task.wait(0.5)
-
-	if not tool.Parent then
+	if not isWeapon(tool) then
 		return
 	end
 
 	local itemId = tool:GetAttribute("ItemID")
 	local itemName = tool:GetAttribute("ItemName")
-	local weaponType = tool:GetAttribute("ItemType")
+	local key = cleanName(itemId or itemName or tool.Name)
 
-	local uniqueId = itemId or itemName or tool.Name
-
-	if collected[uniqueId] or backupFolder:FindFirstChild(safeName(uniqueId)) then
+	if saved[key] or output:FindFirstChild(key) then
 		return
 	end
 
-	local copy = tool:Clone()
-	copy.Name = safeName(uniqueId)
-	copy:SetAttribute("OriginalToolName", tool.Name)
-	copy:SetAttribute("CollectedFrom", tool.Parent:GetFullName())
-	copy:SetAttribute("CollectedReason", reason)
+	handle.Archivable = true
 
-	copy.Parent = backupFolder
-	collected[uniqueId] = true
+	local copy = handle:Clone()
+	copy.Name = key
+	copy:SetAttribute("ItemID", itemId or "")
+	copy:SetAttribute("ItemName", itemName or tool.Name)
+	copy:SetAttribute("ToolName", tool.Name)
+	copy:SetAttribute("FoundAt", tool:GetFullName())
+	copy:SetAttribute("Reason", reason)
+	copy.Parent = output
 
-	print("\n========== ARME SAUVEGARDEE ==========")
-	print("ID :", uniqueId)
-	print("Nom :", itemName or tool.Name)
-	print("Type :", weaponType or "inconnu")
-	print("Dossier :", copy:GetFullName())
-	print("Enfants :", #copy:GetChildren())
+	saved[key] = true
+
+	print("[HANDLE TROUVE]", key, "->", copy:GetFullName())
 end
 
-local function watchPlayer(player)
-	local backpack = player:WaitForChild("Backpack")
-
-	backpack.ChildAdded:Connect(function(child)
-		task.spawn(collectWeapon, child, "ajoutée au Backpack de " .. player.Name)
-	end)
-
-	for _, child in ipairs(backpack:GetChildren()) do
-		task.spawn(collectWeapon, child, "déjà dans Backpack de " .. player.Name)
-	end
+-- Cherche dans tous les services accessibles au serveur.
+for _, instance in ipairs(game:GetDescendants()) do
+	saveHandle(instance, "scan initial")
 end
 
--- Cas où le tag Weapon est ajouté après que le Tool existe.
-CollectionService:GetInstanceAddedSignal("Weapon"):Connect(function(instance)
-	task.spawn(collectWeapon, instance, "tag Weapon ajouté")
+-- Continue à récupérer ceux créés pendant les manches.
+game.DescendantAdded:Connect(function(instance)
+	task.defer(saveHandle, instance, "créé pendant le jeu")
 end)
 
-for _, instance in ipairs(CollectionService:GetTagged("Weapon")) do
-	task.spawn(collectWeapon, instance, "tag Weapon déjà présent")
+for _, tag in ipairs({ "Weapon", "Weapon_Gun", "Weapon_Knife" }) do
+	CollectionService:GetInstanceAddedSignal(tag):Connect(function(tool)
+		task.defer(function()
+			local handle = tool:FindFirstChild("Handle", true)
+
+			if handle then
+				saveHandle(handle, "tag ajouté : " .. tag)
+			end
+		end)
+	end)
 end
 
-game.Players.PlayerAdded:Connect(watchPlayer)
-
-for _, player in ipairs(game.Players:GetPlayers()) do
-	task.spawn(watchPlayer, player)
-end
-
-print("[WeaponCollector] Actif : les armes collectées iront dans ReplicatedStorage.WeaponsBackup")
+print("[AllExistingWeaponHandles] Scan terminé. Regarde ReplicatedStorage.WeaponHandles")
