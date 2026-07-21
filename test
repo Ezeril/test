@@ -1,123 +1,166 @@
--- ServerScriptService > WeaponTracer
+-- ServerScriptService > RuntimeWeaponTracer
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 
 local WEAPON_TAGS = {
 	Weapon = true,
-	Weapon_Knife = true,
 	Weapon_Gun = true,
+	Weapon_Knife = true,
 }
 
-local alreadyLogged = setmetatable({}, { __mode = "k" })
+local watchedTools = setmetatable({}, { __mode = "k" })
+local watchedScripts = setmetatable({}, { __mode = "k" })
 
-local function getTags(instance)
-	local tags = {}
+local function fullName(instance)
+	local ok, result = pcall(function()
+		return instance:GetFullName()
+	end)
 
-	for _, tag in CollectionService:GetTags(instance) do
-		table.insert(tags, tag)
-	end
+	return ok and result or instance.Name
+end
 
+local function tagsToText(instance)
+	local tags = CollectionService:GetTags(instance)
 	return #tags > 0 and table.concat(tags, ", ") or "aucun"
 end
 
-local function getAttributes(instance)
-	local result = {}
+local function attributesToText(instance)
+	local parts = {}
 
-	for key, value in pairs(instance:GetAttributes()) do
-		table.insert(result, key .. " = " .. tostring(value))
+	for name, value in pairs(instance:GetAttributes()) do
+		table.insert(parts, name .. " = " .. tostring(value))
 	end
 
-	return #result > 0 and table.concat(result, " | ") or "aucun"
+	table.sort(parts)
+	return #parts > 0 and table.concat(parts, " | ") or "aucun"
 end
 
-local function isWeapon(instance)
-	if not instance:IsA("Tool") then
+local function isWeapon(tool)
+	if not tool:IsA("Tool") then
 		return false
 	end
 
+	if tool.Name == "Gun" or tool.Name == "Knife" then
+		return true
+	end
+
 	for tag in pairs(WEAPON_TAGS) do
-		if instance:HasTag(tag) then
+		if tool:HasTag(tag) then
 			return true
 		end
 	end
 
-	return false
+	return tool:GetAttribute("IsWeapon") == true
 end
 
-local function logWeapon(tool, reason)
-	if alreadyLogged[tool] then
+local function watchTool(tool, reason)
+	if watchedTools[tool] or not isWeapon(tool) then
 		return
 	end
 
-	alreadyLogged[tool] = true
+	watchedTools[tool] = true
 
-	print("\n========== ARME DETECTEE ==========")
+	print("\n================ ARME RUNTIME ================")
 	print("Raison :", reason)
 	print("Nom :", tool.Name)
-	print("Classe :", tool.ClassName)
-	print("Parent actuel :", tool.Parent and tool.Parent:GetFullName() or "nil")
-	print("Chemin :", tool:GetFullName())
-	print("Tags :", getTags(tool))
-	print("Attributs :", getAttributes(tool))
+	print("Chemin :", fullName(tool))
+	print("Parent :", tool.Parent and fullName(tool.Parent) or "nil")
+	print("Tags :", tagsToText(tool))
+	print("Attributs :", attributesToText(tool))
 	print("Enfants :", #tool:GetChildren())
 
 	for _, child in ipairs(tool:GetChildren()) do
-		print("  -", child.ClassName, child.Name)
+		print("  Enfant :", child.ClassName, child.Name)
 	end
+
+	tool.ChildAdded:Connect(function(child)
+		print("[ARME ENFANT AJOUTÉ]", tool.Name, "->", child.ClassName, child.Name)
+	end)
+
+	tool.AttributeChanged:Connect(function(attributeName)
+		print(
+			"[ARME ATTRIBUT MODIFIÉ]",
+			tool.Name,
+			attributeName,
+			"=",
+			tostring(tool:GetAttribute(attributeName))
+		)
+	end)
 
 	tool:GetPropertyChangedSignal("Parent"):Connect(function()
 		print(
-			"[WeaponTracer] " .. tool.Name .. " a changé de parent ->",
-			tool.Parent and tool.Parent:GetFullName() or "nil"
+			"[ARME PARENT CHANGE]",
+			tool.Name,
+			"->",
+			tool.Parent and fullName(tool.Parent) or "nil"
 		)
+	end)
+
+	tool.Destroying:Connect(function()
+		print("[ARME DÉTRUITE]", tool.Name, "dernier chemin :", fullName(tool))
 	end)
 end
 
-local function watchContainer(container)
-	for _, child in ipairs(container:GetChildren()) do
-		if isWeapon(child) then
-			logWeapon(child, "déjà présent au démarrage")
-		end
+local function watchScript(scriptObject, reason)
+	if watchedScripts[scriptObject] then
+		return
 	end
 
-	container.ChildAdded:Connect(function(child)
-		task.wait()
+	watchedScripts[scriptObject] = true
 
-		if isWeapon(child) then
-			logWeapon(child, "ajouté dans " .. container:GetFullName())
-		end
+	print("\n[NEW SCRIPT RUNTIME]")
+	print("Raison :", reason)
+	print("Classe :", scriptObject.ClassName)
+	print("Chemin :", fullName(scriptObject))
+
+	if scriptObject:IsA("ModuleScript") then
+		print("Nom ModuleScript :", scriptObject.Name)
+	end
+end
+
+local function inspect(instance, reason)
+	if instance:IsA("Tool") then
+		task.defer(watchTool, instance, reason)
+	end
+
+	if instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
+		watchScript(instance, reason)
+	end
+end
+
+-- Surveille chaque service où des objets peuvent être créés ou déplacés.
+local ROOTS = {
+	workspace,
+	game:GetService("ReplicatedStorage"),
+	game:GetService("ServerStorage"),
+	game:GetService("ServerScriptService"),
+}
+
+for _, root in ipairs(ROOTS) do
+	root.DescendantAdded:Connect(function(instance)
+		inspect(instance, "DescendantAdded dans " .. root.Name)
 	end)
+
+	for _, instance in ipairs(root:GetDescendants()) do
+		inspect(instance, "déjà présent dans " .. root.Name)
+	end
 end
 
 local function watchPlayer(player)
-	local function watchCharacter(character)
-		watchContainer(character)
-	end
+	local backpack = player:WaitForChild("Backpack")
 
-	watchContainer(player:WaitForChild("Backpack"))
-
-	if player.Character then
-		watchCharacter(player.Character)
-	end
-
-	player.CharacterAdded:Connect(watchCharacter)
-end
-
--- Arme taguée après sa création
-for tag in pairs(WEAPON_TAGS) do
-	CollectionService:GetInstanceAddedSignal(tag):Connect(function(instance)
-		if instance:IsA("Tool") then
-			logWeapon(instance, "tag ajouté : " .. tag)
-		end
+	backpack.ChildAdded:Connect(function(instance)
+		inspect(instance, "ajouté au Backpack de " .. player.Name)
 	end)
-end
 
--- Armes déjà taguées avant le lancement du traceur
-for tag in pairs(WEAPON_TAGS) do
-	for _, instance in ipairs(CollectionService:GetTagged(tag)) do
-		if instance:IsA("Tool") then
-			logWeapon(instance, "tag déjà existant : " .. tag)
-		end
+	player.CharacterAdded:Connect(function(character)
+		character.ChildAdded:Connect(function(instance)
+			inspect(instance, "ajouté au Character de " .. player.Name)
+		end)
+	end)
+
+	for _, instance in ipairs(backpack:GetChildren()) do
+		inspect(instance, "déjà dans Backpack de " .. player.Name)
 	end
 end
 
@@ -127,4 +170,15 @@ for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(watchPlayer, player)
 end
 
-print("[WeaponTracer] Actif : lance une manche et obtiens Murderer ou Sheriff.")
+-- Détection lorsque les tags sont ajoutés après la création du Tool.
+for tag in pairs(WEAPON_TAGS) do
+	CollectionService:GetInstanceAddedSignal(tag):Connect(function(instance)
+		task.defer(watchTool, instance, "tag ajouté : " .. tag)
+	end)
+
+	for _, instance in ipairs(CollectionService:GetTagged(tag)) do
+		task.defer(watchTool, instance, "tag existant : " .. tag)
+	end
+end
+
+print("[RuntimeWeaponTracer] Actif. Lance une manche puis attends Murderer/Sheriff.")
